@@ -8,14 +8,12 @@
   --color-metrova-alert: #EF4444;
 }
 
-/* 3. Base UI Setup */
 @layer base {
   body {
     @apply bg-metrova-dark text-slate-300 font-mono antialiased;
   }
 }
 
-/* 4. Custom Tactical Scrollbar */
 ::-webkit-scrollbar { 
   width: 4px; 
 }
