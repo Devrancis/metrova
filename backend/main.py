@@ -4,6 +4,7 @@ import os
 import asyncpg
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from dotenv import load_dotenv
 
@@ -13,9 +14,8 @@ load_dotenv()
 DATABASE_URL = os.getenv("NEON_DATABASE_URL")
 VALID_API_KEYS = {"metrova_sk_live_98a7sd98f7asdf": "client_futa_001"}
 
-# ---------------------------------------------------------
-# DATABASE CONNECTION POOL (The Vault)
-# ---------------------------------------------------------
+# DATABASE CONNECTION POOL (The Vault
+
 db_pool = None
 
 @asynccontextmanager
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[DB] CRITICAL ERROR: Could not connect to Neon Vault. Check your .env file. Error: {e}")
     
-    yield # The server runs here
+    yield
     
     if db_pool:
         print("[DB] Closing Neon connection pool...")
@@ -38,9 +38,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ---------------------------------------------------------
-# CONNECTION MANAGER (The Bridge)
-# ---------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["GET"], 
+    allow_headers=["*"],
+)
+
+# CONNECTION MANAGER 
+
 class ConnectionManager:
     def __init__(self):
         self.active_frontends: List[WebSocket] = []
@@ -64,9 +71,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# ---------------------------------------------------------
+
 # DATABASE INGESTION TASK (Fire and Forget)
-# ---------------------------------------------------------
+
 async def log_telemetry_to_db(data: dict):
     """Silently writes telemetry to Neon in the background."""
     if not db_pool:
@@ -92,9 +99,9 @@ async def log_telemetry_to_db(data: dict):
     except Exception as e:
         print(f"[DB ERROR] Failed to insert log: {e}")
 
-# ---------------------------------------------------------
+
 # PIPELINE 1: FRONTEND BROADCAST (Next.js listens here)
-# ---------------------------------------------------------
+
 @app.websocket("/ws/metrics")
 async def frontend_endpoint(websocket: WebSocket):
     await manager.connect_frontend(websocket)
@@ -104,9 +111,9 @@ async def frontend_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect_frontend(websocket)
 
-# ---------------------------------------------------------
+
 # PIPELINE 2: AGENT INGESTION (Servers push here)
-# ---------------------------------------------------------
+
 async def verify_agent_token(websocket: WebSocket) -> str:
     auth_header = websocket.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -140,3 +147,37 @@ async def agent_ingest_endpoint(websocket: WebSocket):
         print("[AGENT] Connection lost.")
     except Exception as e:
         print(f"[AGENT] Ingestion Error: {e}")
+
+
+# PIPELINE 3: STATE HYDRATION (REST API)
+
+@app.get("/api/history")
+async def get_telemetry_history():
+    """Fetches the last 35 pings from the Neon Vault to hydrate the UI."""
+    if not db_pool:
+        return []
+        
+    query = """
+        SELECT node_id, cpu_load_percent, memory_usage_gb, active_users, network_latency_ms, threat_events, recorded_at
+        FROM telemetry_logs
+        ORDER BY recorded_at DESC
+        LIMIT 35
+    """
+    try:
+        async with db_pool.acquire() as connection:
+            records = await connection.fetch(query)
+            
+            # Convert DB records to dictionaries
+            history = [dict(record) for record in records]
+            
+            # Reverse the list so chronological order is correct for the charts (oldest -> newest)
+            history.reverse()
+
+            # Format the PostgreSQL timestamp into the exact string the React charts expect
+            for item in history:
+                item['time'] = item['recorded_at'].strftime("%H:%M:%S")
+
+            return history
+    except Exception as e:
+        print(f"[DB ERROR] Failed to fetch history: {e}")
+        return []
