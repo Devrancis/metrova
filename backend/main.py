@@ -1,17 +1,46 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
-from typing import List, Dict
+import asyncio
 import json
 import os
+import asyncpg
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+from typing import List
+from dotenv import load_dotenv
 
-app = FastAPI()
- 
-# SECURITY VAULT
-VALID_API_KEYS = {
-    "metrova_sk_live_98a7sd98f7asdf": "client_futa_001"
-}
+# Load environment variables from .env file
+load_dotenv()
 
- 
-# CONNECTION MANAGER 
+DATABASE_URL = os.getenv("NEON_DATABASE_URL")
+VALID_API_KEYS = {"metrova_sk_live_98a7sd98f7asdf": "client_futa_001"}
+
+# ---------------------------------------------------------
+# DATABASE CONNECTION POOL (The Vault)
+# ---------------------------------------------------------
+db_pool = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global db_pool
+    print("[SYSTEM] Booting Metrova Engine...")
+    print("[DB] Initializing secure connection to Neon PostgreSQL...")
+    try:
+        # Create a connection pool to handle thousands of rapid inserts
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+        print("[DB] SUCCESS: Neon Vault is online and connected.")
+    except Exception as e:
+        print(f"[DB] CRITICAL ERROR: Could not connect to Neon Vault. Check your .env file. Error: {e}")
+    
+    yield # The server runs here
+    
+    if db_pool:
+        print("[DB] Closing Neon connection pool...")
+        await db_pool.close()
+
+app = FastAPI(lifespan=lifespan)
+
+# ---------------------------------------------------------
+# CONNECTION MANAGER (The Bridge)
+# ---------------------------------------------------------
 class ConnectionManager:
     def __init__(self):
         self.active_frontends: List[WebSocket] = []
@@ -22,34 +51,63 @@ class ConnectionManager:
         print(f"[UI] Dashboard Connected. Total active: {len(self.active_frontends)}")
 
     def disconnect_frontend(self, websocket: WebSocket):
-        self.active_frontends.remove(websocket)
-        print(f"[UI] Dashboard Disconnected. Total active: {len(self.active_frontends)}")
+        if websocket in self.active_frontends:
+            self.active_frontends.remove(websocket)
+            print(f"[UI] Dashboard Disconnected. Total active: {len(self.active_frontends)}")
 
-    async def broadcast_to_dashboards(self, message: dict):
-        # Sends the incoming agent data to all connected frontends
+    async def broadcast(self, message: dict):
         for connection in self.active_frontends:
             try:
                 await connection.send_json(message)
             except Exception as e:
-                print(f"Failed to send to a dashboard: {e}")
+                print(f"[UI] Broadcast error: {e}")
 
 manager = ConnectionManager()
 
- 
-# PIPELINE 1: FRONTEND BROADCAST 
+# ---------------------------------------------------------
+# DATABASE INGESTION TASK (Fire and Forget)
+# ---------------------------------------------------------
+async def log_telemetry_to_db(data: dict):
+    """Silently writes telemetry to Neon in the background."""
+    if not db_pool:
+        return
+        
+    query = """
+        INSERT INTO telemetry_logs 
+        (node_id, cpu_load_percent, memory_usage_gb, active_users, network_latency_ms, threat_events)
+        VALUES ($1, $2, $3, $4, $5, $6)
+    """
+    try:
+        async with db_pool.acquire() as connection:
+            await connection.execute(
+                query,
+                data.get("node_id", "unknown"),
+                data.get("cpu_load_percent", 0),
+                data.get("memory_usage_gb", 0),
+                data.get("active_users", 0),
+                data.get("network_latency_ms", 0),
+                data.get("threat_events", 0)
+            )
+            # print(f"[DB] Logged ping from {data.get('node_id')} to Neon.") # Uncomment to see DB writes in terminal
+    except Exception as e:
+        print(f"[DB ERROR] Failed to insert log: {e}")
+
+# ---------------------------------------------------------
+# PIPELINE 1: FRONTEND BROADCAST (Next.js listens here)
+# ---------------------------------------------------------
 @app.websocket("/ws/metrics")
 async def frontend_endpoint(websocket: WebSocket):
     await manager.connect_frontend(websocket)
     try:
         while True:
-            await websocket.receive_text() 
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect_frontend(websocket)
 
- 
-# PIPELINE 2: AGENT INGESTION 
+# ---------------------------------------------------------
+# PIPELINE 2: AGENT INGESTION (Servers push here)
+# ---------------------------------------------------------
 async def verify_agent_token(websocket: WebSocket) -> str:
-    # Look for the Authorization header
     auth_header = websocket.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -62,22 +120,21 @@ async def verify_agent_token(websocket: WebSocket) -> str:
         
     return VALID_API_KEYS[token]
 
-
 @app.websocket("/ingest")
 async def agent_ingest_endpoint(websocket: WebSocket):
     try:
-        # 1. Zero-Trust Verification
         client_id = await verify_agent_token(websocket)
         await websocket.accept()
         print(f"[AGENT] Secure connection established for: {client_id}")
         
-        # 2. Continuous Data Ingestion
         while True:
-            # Receive data from the server agent
             data = await websocket.receive_json()
             
-            # 3. Instantly route it to the frontends
-            await manager.broadcast_to_dashboards(data)
+            # 1. Instantly route it to the frontends (Zero Latency)
+            await manager.broadcast(data)
+            
+            # 2. Hand it off to Neon in the background (Non-Blocking)
+            asyncio.create_task(log_telemetry_to_db(data))
             
     except WebSocketDisconnect:
         print("[AGENT] Connection lost.")
