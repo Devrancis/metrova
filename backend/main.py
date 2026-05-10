@@ -8,13 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 DATABASE_URL = os.getenv("NEON_DATABASE_URL")
+METROVA_ENDPOINT = os.getenv("METROVA_INGEST_URL", "ws://localhost:8000/ingest")
 VALID_API_KEYS = {"metrova_sk_live_98a7sd98f7asdf": "client_futa_001"}
 
-# DATABASE CONNECTION POOL (The Vault
+# DATABASE CONNECTION POOL
 
 db_pool = None
 

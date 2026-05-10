@@ -11,7 +11,7 @@ const INITIAL_NODES = [
 ].map(id => ({ id, status: 'ok', load: 30 + Math.round(Math.random() * 50) }));
 
 export default function MetrovaDashboard() {
-  const { data, isConnected } = useMetrovaStream("ws://localhost:8000/ws/metrics");
+  const { data, isConnected } = useMetrovaStream(process.env.NEXT_PUBLIC_METROVA_WS_URL!);
   
   const [history, setHistory] = useState<any[]>([]);
   const [nodes, setNodes] = useState(INITIAL_NODES);
@@ -21,7 +21,7 @@ export default function MetrovaDashboard() {
   useEffect(() => {
     const fetchHistory = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/history");
+        const res = await fetch(process.env.NEXT_PUBLIC_METROVA_WS_URL!);
         if (!res.ok) throw new Error("Failed to fetch history");
         const pastData = await res.json();
         
