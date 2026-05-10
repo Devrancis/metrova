@@ -17,6 +17,26 @@ export default function MetrovaDashboard() {
   const [nodes, setNodes] = useState(INITIAL_NODES);
   const [time, setTime] = useState("--:--:--");
 
+  // INITIAL HYDRATION
+  useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/api/history");
+        if (!res.ok) throw new Error("Failed to fetch history");
+        const pastData = await res.json();
+        
+        // Inject the vault data straight into the chart state
+        if (pastData.length > 0) {
+          setHistory(pastData);
+        }
+      } catch (error) {
+        console.error("Hydration failed. Waiting for live WebSocket stream...", error);
+      }
+    };
+    
+    fetchHistory();
+  }, []);
+
   // Live Clock & Node Health Simulator
   useEffect(() => {
     const interval = setInterval(() => {
